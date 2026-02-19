@@ -124,7 +124,7 @@ typedef struct {
   AKV_REAL *gp_z[3];        // each length gp_N, or NULL if not computed/available
 } akv_diagnostics_t;
 
-static void akv_diagnostics_free(akv_diagnostics_t *d) {
+void akv_diagnostics_free(akv_diagnostics_t *d) {
   if (!d) return;
   for (int a = 0; a < 3; a++) {
     free(d->gp_z[a]);
@@ -307,25 +307,24 @@ static void tri3_solve_upper_from_lowerT(const AKV_REAL L[3][3], const AKV_REAL 
 
 static void generalized_to_standard3(const AKV_REAL H[3][3], const AKV_REAL L[3][3], AKV_REAL C[3][3]) {
   AKV_REAL A[3][3];
-  mat3_zero(A);
-  mat3_zero(C);
 
-  for (int j = 0; j < 3; j++) {
-    AKV_REAL b[3] = { H[0][j], H[1][j], H[2][j] };
-    AKV_REAL x[3];
-    tri3_solve_lower(L, b, x);
-    A[0][j] = x[0]; A[1][j] = x[1]; A[2][j] = x[2];
+  for (int i = 0; i < 3; i++) {
+    AKV_REAL h[3] = { H[0][i], H[1][i], H[2][i] };
+    AKV_REAL a[3];
+    tri3_solve_lower(L, h, a); // a = L^-1 h
+    A[0][i] = a[0]; A[1][i] = a[1]; A[2][i] = a[2]; // A = L^-1 H
   }
 
-  for (int j = 0; j < 3; j++) {
-    AKV_REAL y[3] = { A[0][j], A[1][j], A[2][j] };
-    AKV_REAL v[3];
-    tri3_solve_upper_from_lowerT(L, y, v);
-    C[0][j] = v[0]; C[1][j] = v[1]; C[2][j] = v[2];
+  for (int i = 0; i < 3; i++) {
+    AKV_REAL c[3];
+    tri3_solve_lower(L, A[i], c); // c = L^-1 a^T
+                                  //   = L^-1 h L^-T (H is symmetric)
+    C[0][i] = c[0]; C[1][i] = c[1]; C[2][i] = c[2];
   }
 
+  // Fixes asymmetry that may be caused by floating point precision.
   for (int i = 0; i < 3; i++) for (int j = i+1; j < 3; j++) {
-    AKV_REAL s = 0.5*(C[i][j] + C[j][i]);
+    AKV_REAL s = (C[i][j] + C[j][i])/2;
     C[i][j] = s; C[j][i] = s;
   }
 }
@@ -394,9 +393,6 @@ static void sort_eigs3(AKV_REAL eval[3], AKV_REAL V[3][3]) {
   }
 }
 
-static void backtransform_gen_evec3(const AKV_REAL L[3][3], const AKV_REAL u[3], AKV_REAL x[3]) {
-  tri3_solve_upper_from_lowerT(L, u, x);
-}
 static void normalize_gen_evec3(const AKV_REAL N[3][3], AKV_REAL x[3]) {
   AKV_REAL Nx[3];
   mat3_mul_vec(N, x, Nx);
@@ -564,6 +560,7 @@ static AKV_REAL akv_residual_ratio_dense_inplace(
   return (denom > 0) ? (nr / denom) : 0.0;
 }
 
+/*
 // Residual ratio using operator application (no dense matrices), with caller-provided scratch buffers of length N.
 static AKV_REAL akv_residual_ratio_apply_inplace(
     const akv_horizon_grid_t *grid,
@@ -584,6 +581,7 @@ static AKV_REAL akv_residual_ratio_apply_inplace(
   AKV_REAL denom = nK + nB;
   return (denom > 0) ? (nr / denom) : 0.0;
 }
+*/
 
 // B-inner-product Gram–Schmidt on k vectors (columns) in V (N x k), using dense B (N x N).
 // Reuses tmp buffer of length N.
@@ -706,7 +704,7 @@ static akv_error_t akv_solve_l1_reduced(
   for (int k = 0; k < 3; k++) {
     AKV_REAL u[3] = { V[0][k], V[1][k], V[2][k] };
     AKV_REAL x[3];
-    backtransform_gen_evec3(L, u, x);
+    tri3_solve_upper_from_lowerT(L, u, x);
     normalize_gen_evec3(N, x);
 
     AKV_REAL sref = 0.0;
@@ -733,9 +731,9 @@ static akv_error_t akv_solve_l1_reduced(
     if (pars->eig_tol > 0 && out->akv_eig_resid[k] > pars->eig_tol) out->akv_quality_flag |= (1<<0);
   }
 
-  out->akv_J[0] = Jm[0];
-  out->akv_J[1] = Jm[1];
-  out->akv_J[2] = Jm[2];
+  out->akv_J[0] = Jm[0]/(8*M_PI);
+  out->akv_J[1] = Jm[1]/(8*M_PI);
+  out->akv_J[2] = Jm[2]/(8*M_PI);
 
   out->akv_a[0] = 0.0;
   out->akv_a[1] = 0.0;
@@ -743,7 +741,8 @@ static akv_error_t akv_solve_l1_reduced(
 
   if (pars->build_spin_vector && map_to_spinvec) {
     int k = pars->l1_choose_index;
-    if (k < 0) k = 0; if (k > 2) k = 2;
+    if (k < 0) k = 0;
+    if (k > 2) k = 2;
     AKV_REAL coeffs[3] = { out->akv_l1_evecs[0][k], out->akv_l1_evecs[1][k], out->akv_l1_evecs[2][k] };
     map_to_spinvec(coeffs, grid, out->akv_spin_vec);
   } else {
@@ -1111,10 +1110,10 @@ static akv_error_t akv_solve_gridpoint_basis(
       for (int dof = 0; dof < N_full; dof++) {
         int p = akv_dof_to_full_p(grid, dof);
         AKV_REAL wp = grid->w[p];
-        AKV_REAL I = eval_J_full(p, grid, z, N_full);
-        sum += wp * I;
+        AKV_REAL integrand = eval_J_full(p, grid, z, N_full);
+        sum += wp * integrand;
       }
-      out->akv_J[a] = sum;
+      out->akv_J[a] = sum/(8*M_PI);
     }
   }
 
