@@ -14,11 +14,9 @@ ifeq ($(COMPILER_SUPPORTS_OPENMP), YES)
     LDFLAGS += $(OPENMP_FLAG)
 endif
 
+# Check for LAPACKE support
 LAPACKE_FLAG := -DUSE_LAPACKE
 LAPACKE_LIBS := -llapacke -llapack -lblas
-
-# Optionally allow user override:
-# LAPACKE_LIBS := -llapacke -llapack -lopenblas
 
 COMPILER_SUPPORTS_LAPACKE := $(shell \
   printf '%s\n' \
