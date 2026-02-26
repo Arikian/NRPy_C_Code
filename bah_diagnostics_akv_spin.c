@@ -28,13 +28,13 @@
  *    - Dense matrices are stored column-major: M[i + N*j].
  *
  * Build (standalone demo):
- *   gcc -O2 -std=c11 -DAKV_STANDALONE akv_spin_diagnostics.c -lm -o akv_demo
+ *   gcc -O2 -std=c11 -DAKV_STANDALONE bah_diagnostics_akv_spin.c -lm -o akv_demo
  *
  * Optional OpenMP:
- *   gcc -O2 -std=c11 -DAKV_STANDALONE -fopenmp akv_spin_diagnostics.c -lm -o akv_demo
+ *   gcc -O2 -std=c11 -DAKV_STANDALONE -fopenmp bah_diagnostics_akv_spin.c -lm -o akv_demo
  *
  * Optional LAPACKE:
- *   gcc -O2 -std=c11 -DUSE_LAPACKE -DAKV_STANDALONE akv_spin_diagnostics.c -llapacke -llapack -lblas -lm -o akv_demo
+ *   gcc -O2 -std=c11 -DUSE_LAPACKE -DAKV_STANDALONE bah_diagnostics_akv_spin.c -llapacke -llapack -lblas -lm -o akv_demo
  */
 
 #include <math.h>
@@ -144,9 +144,10 @@ typedef struct {
   int full_num_eigs;     // >=4 recommended for gap diagnostic
   AKV_REAL eig_tol;      // e.g., 1e-10 to 1e-8
   AKV_REAL reg_eps;      // initial diagonal regularization for B_red
-  AKV_REAL reg_eps_max;  // maximum regularization allowed
+  AKV_REAL reg_eps_max = NAN;  // maximum regularization allowed
   int reg_max_tries;     // retry count for SPD failures
   AKV_REAL gap_ratio_thresh; // e.g., 1.5
+  AKV_REAL horizon_area; // the area of the black hole horizon
 
   bool build_spin_vector;
 
@@ -735,9 +736,12 @@ static akv_error_t akv_solve_l1_reduced(
   out->akv_J[1] = Jm[1]/(8*M_PI);
   out->akv_J[2] = Jm[2]/(8*M_PI);
 
-  out->akv_a[0] = 0.0;
-  out->akv_a[1] = 0.0;
-  out->akv_a[2] = 0.0;
+
+  static const AKV_REAL A = pars->horizon_area;
+  const AKV_REAL DLSF = 2*A/(A*A+Jm[0]+Jm[1]+Jm[2]);
+  out->akv_a[0] = Jm[0]*DSLF;
+  out->akv_a[1] = Jm[1]*DSLF;
+  out->akv_a[2] = Jm[2]*DSLF;
 
   if (pars->build_spin_vector && map_to_spinvec) {
     int k = pars->l1_choose_index;
@@ -904,8 +908,9 @@ static akv_error_t akv_full_solve_dense_generalized_reduced_spd_retry(
 #else
   const int max_tries = (pars->reg_max_tries > 0) ? pars->reg_max_tries : 1;
   AKV_REAL reg = (pars->reg_eps > 0) ? pars->reg_eps : 0.0;
-  const AKV_REAL reg_max = (pars->reg_eps_max > 0) ? pars->reg_eps_max : reg;
+  const AKV_REAL reg_max = (pars->reg_eps_max > reg) ? pars->reg_eps_max : reg;
 
+  bool max_eps = false;
   for (int attempt = 0; attempt < max_tries; attempt++) {
     AKV_REAL *A = (AKV_REAL*)malloc((size_t)Nr*(size_t)Nr*sizeof(AKV_REAL));
     AKV_REAL *B = (AKV_REAL*)malloc((size_t)Nr*(size_t)Nr*sizeof(AKV_REAL));
@@ -924,22 +929,22 @@ static akv_error_t akv_full_solve_dense_generalized_reduced_spd_retry(
     if (!akv_try_cholesky_spd(B, Nr)) {
       free(A); free(B); free(w);
       *quality_flag_io |= (1<<3);
-      if (attempt == max_tries - 1) return AKV_ERR_EIGEN_FAIL;
+      if (attempt == max_tries - 1 || max_eps) return AKV_ERR_EIGEN_FAIL;
       if (reg == 0.0) reg = 1e-14;
       else reg *= 10.0;
-      if (reg_max > 0 && reg > reg_max) reg = reg_max;
+      if (reg_max > 0 && reg > reg_max) { reg = reg_max; max_eps = true; }
       continue;
     }
-
+    
     // Solve A x = λ B x. LAPACKE_dsygvd overwrites A with eigenvectors.
     int info = LAPACKE_dsygvd(LAPACK_COL_MAJOR, 1, 'V', 'U', Nr, A, Nr, B, Nr, w);
     if (info != 0) {
       free(A); free(B); free(w);
       *quality_flag_io |= (1<<3);
-      if (attempt == max_tries - 1) return AKV_ERR_EIGEN_FAIL;
+      if (attempt == max_tries - 1 || max_eps) return AKV_ERR_EIGEN_FAIL;
       if (reg == 0.0) reg = 1e-14;
       else reg *= 10.0;
-      if (reg_max > 0 && reg > reg_max) reg = reg_max;
+      if (reg_max > 0 && reg > reg_max) { reg = reg_max; max_eps = true; }
       continue;
     }
 
@@ -1077,6 +1082,8 @@ static akv_error_t akv_solve_gridpoint_basis(
     if (a >= kmodes) continue;
     out->gp_z[a] = (AKV_REAL*)malloc((size_t)N_full * sizeof(AKV_REAL));
     if (!out->gp_z[a]) {
+      for (int k = 0; k < a; k++) { free(out->gp_z[k]); out->gp_z[k] = NULL; }
+      out->gp_N = 0;
       free(Kfull); free(Bfull); free(Kred); free(Bred); free(eval); free(evec);
       akv_mean0_basis_free(&b);
       return AKV_ERR_ALLOC;
@@ -1117,10 +1124,12 @@ static akv_error_t akv_solve_gridpoint_basis(
     }
   }
 
-  // Dimensionless spin components are left for the caller to normalize by M_H^2.
-  out->akv_a[0] = 0.0;
-  out->akv_a[1] = 0.0;
-  out->akv_a[2] = 0.0;
+  // Dimensionless spin components normalized by M_H^2.
+  static const AKV_REAL A = pars->horizon_area;
+  const AKV_REAL DLSF = 2*A/(A*A+Jm[0]+Jm[1]+Jm[2]);
+  out->akv_a[0] = Jm[0]*DSLF;
+  out->akv_a[1] = Jm[1]*DSLF;
+  out->akv_a[2] = Jm[2]*DSLF;
 
   out->akv_spin_vec[0] = 0.0;
   out->akv_spin_vec[1] = 0.0;
