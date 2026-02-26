@@ -37,12 +37,7 @@
  *   gcc -O2 -std=c11 -DUSE_LAPACKE -DAKV_STANDALONE bah_diagnostics_akv_spin.c -llapacke -llapack -lblas -lm -o akv_demo
  */
 
-#include <math.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "BHaH_defines.h"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -144,7 +139,7 @@ typedef struct {
   int full_num_eigs;     // >=4 recommended for gap diagnostic
   AKV_REAL eig_tol;      // e.g., 1e-10 to 1e-8
   AKV_REAL reg_eps;      // initial diagonal regularization for B_red
-  AKV_REAL reg_eps_max = NAN;  // maximum regularization allowed
+  AKV_REAL reg_eps_max;  // maximum regularization allowed
   int reg_max_tries;     // retry count for SPD failures
   AKV_REAL gap_ratio_thresh; // e.g., 1.5
   AKV_REAL horizon_area; // the area of the black hole horizon
@@ -264,6 +259,27 @@ static inline void vecn_scale(AKV_REAL *a, int n, AKV_REAL alpha) {
 }
 static inline void vecn_axpy(AKV_REAL *y, const AKV_REAL *x, int n, AKV_REAL alpha) {
   for (int i = 0; i < n; i++) y[i] += alpha * x[i];
+}
+
+static void akv_compute_dimensionless_spins(const AKV_REAL J[3], AKV_REAL horizon_area, AKV_REAL a_out[3]) {
+  a_out[0] = 0.0;
+  a_out[1] = 0.0;
+  a_out[2] = 0.0;
+
+  // Whitepaper normalization:
+  // M_irr^2 = A/(16*pi), M_H^2 = M_irr^2 + J_ref^2/(4*M_irr^2), a_i = J_i/M_H^2.
+  if (!(horizon_area > 0.0)) return;
+  const AKV_REAL M_irr2 = horizon_area / (16.0 * (AKV_REAL)M_PI);
+  if (!(M_irr2 > 0.0)) return;
+
+  const AKV_REAL Jref2 = J[0]*J[0] + J[1]*J[1] + J[2]*J[2];
+  const AKV_REAL M_H2 = M_irr2 + Jref2 / (4.0 * M_irr2);
+  if (!(M_H2 > 0.0)) return;
+
+  const AKV_REAL inv_M_H2 = 1.0 / M_H2;
+  a_out[0] = J[0] * inv_M_H2;
+  a_out[1] = J[1] * inv_M_H2;
+  a_out[2] = J[2] * inv_M_H2;
 }
 
 static void mat3_mul_vec(const AKV_REAL A[3][3], const AKV_REAL x[3], AKV_REAL y[3]) {
@@ -730,18 +746,10 @@ static akv_error_t akv_solve_l1_reduced(
     AKV_REAL denom = nHx + nNx;
     out->akv_eig_resid[k] = (denom > 0) ? (nr / denom) : 0.0;
     if (pars->eig_tol > 0 && out->akv_eig_resid[k] > pars->eig_tol) out->akv_quality_flag |= (1<<0);
+
+    out->akv_J[k] = vec3_dot(x, Jm) / (8.0 * (AKV_REAL)M_PI);
   }
-
-  out->akv_J[0] = Jm[0]/(8*M_PI);
-  out->akv_J[1] = Jm[1]/(8*M_PI);
-  out->akv_J[2] = Jm[2]/(8*M_PI);
-
-
-  static const AKV_REAL A = pars->horizon_area;
-  const AKV_REAL DLSF = 2*A/(A*A+Jm[0]+Jm[1]+Jm[2]);
-  out->akv_a[0] = Jm[0]*DSLF;
-  out->akv_a[1] = Jm[1]*DSLF;
-  out->akv_a[2] = Jm[2]*DSLF;
+  akv_compute_dimensionless_spins(out->akv_J, pars->horizon_area, out->akv_a);
 
   if (pars->build_spin_vector && map_to_spinvec) {
     int k = pars->l1_choose_index;
@@ -1120,16 +1128,12 @@ static akv_error_t akv_solve_gridpoint_basis(
         AKV_REAL integrand = eval_J_full(p, grid, z, N_full);
         sum += wp * integrand;
       }
-      out->akv_J[a] = sum/(8*M_PI);
+      out->akv_J[a] = sum / (8.0 * (AKV_REAL)M_PI);
     }
   }
 
   // Dimensionless spin components normalized by M_H^2.
-  static const AKV_REAL A = pars->horizon_area;
-  const AKV_REAL DLSF = 2*A/(A*A+Jm[0]+Jm[1]+Jm[2]);
-  out->akv_a[0] = Jm[0]*DSLF;
-  out->akv_a[1] = Jm[1]*DSLF;
-  out->akv_a[2] = Jm[2]*DSLF;
+  akv_compute_dimensionless_spins(out->akv_J, pars->horizon_area, out->akv_a);
 
   out->akv_spin_vec[0] = 0.0;
   out->akv_spin_vec[1] = 0.0;
