@@ -1,5 +1,5 @@
 /*
- * bah_diagnostics_akv_spin.c
+ * bah_diagnostics_approx_killing_vector.c
  *
  * Compilable AKV diagnostic scaffold with two workflows:
  *   (A) L1-reduced AKV: assemble 3x3 generalized eigenproblem (H x = λ N x) and solve.
@@ -28,13 +28,13 @@
  *    - Dense matrices are stored column-major: M[i + N*j].
  *
  * Build (standalone demo):
- *   gcc -O2 -std=c11 -DAKV_STANDALONE bah_diagnostics_akv_spin.c -lm -o akv_demo
+ *   gcc -O2 -std=c11 -DAKV_STANDALONE bah_diagnostics_approx_killing_vector_spin.c -lm -o akv_demo
  *
  * Optional OpenMP:
- *   gcc -O2 -std=c11 -DAKV_STANDALONE -fopenmp bah_diagnostics_akv_spin.c -lm -o akv_demo
+ *   gcc -O2 -std=c11 -DAKV_STANDALONE -fopenmp bah_diagnostics_approx_killing_vector_spin.c -lm -o akv_demo
  *
  * Optional LAPACKE:
- *   gcc -O2 -std=c11 -DUSE_LAPACKE -DAKV_STANDALONE bah_diagnostics_akv_spin.c -llapacke -llapack -lblas -lm -o akv_demo
+ *   gcc -O2 -std=c11 -DUSE_LAPACKE -DAKV_STANDALONE bah_diagnostics_approx_killing_vector_spin.c -llapacke -llapack -lblas -lm -o akv_demo
  */
 
 #include "BHaH_defines.h"
